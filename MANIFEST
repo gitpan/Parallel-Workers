@@ -1,0 +1,13 @@
+Changes
+MANIFEST
+META.yml # Will be created by "make dist"
+Makefile.PL
+README
+lib/Parallel/Workers.pm
+lib/Parallel/Workers/Backend.pm
+lib/Parallel/Workers/Backend/SSH.pm
+lib/Parallel/Workers/Backend/Local.pm
+lib/Parallel/Workers/Backend/Null.pm
+lib/Parallel/Workers/Backend/XMLRPC.pm
+t/00.load.t
+t/process-0.t
