@@ -1,6 +1,6 @@
 ---
 name: Parallel-Workers
-version: 0.0.4
+version: 0.0.5
 author:
   - Olivier Evalet <evaleto@gelux.ch>
 abstract: "[One line description of module's purpose here]"
@@ -17,7 +17,7 @@ requires:
 provides:
   Parallel::Workers:
     file: lib/Parallel/Workers.pm
-    version: 0.0.4
+    version: 0.0.5
   Parallel::Workers::Backend:
     file: lib/Parallel/Workers/Backend.pm
   Parallel::Workers::Backend::Local:
@@ -28,6 +28,10 @@ provides:
     file: lib/Parallel/Workers/Backend/SSH.pm
   Parallel::Workers::Backend::XMLRPC:
     file: lib/Parallel/Workers/Backend/XMLRPC.pm
+  Parallel::Workers::Shared:
+    file: lib/Parallel/Workers/Shared.pm
+  Parallel::Workers::Transaction:
+    file: lib/Parallel/Workers/Transaction.pm
 generated_by: Module::Build version 0.28
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.2.html
