@@ -1,4 +1,4 @@
-package Parallel::Workers::Backend::Local;
+package Parallel::Workers::Backend::Eval;
 
 use warnings;
 use strict;

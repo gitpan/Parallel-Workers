@@ -17,7 +17,8 @@ my $worker=Parallel::Workers->new(
                                   );
 
 
-$id=$worker->create(hosts => \@hosts, command=>"cat /proc/cmdline"); 
+$id=$worker->create(hosts => \@hosts, command=>"cat /proc/cmdline",
+                                      transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m}); 
 
 $info=$worker->info();
 ok($info->{$id}{'localhost'}{do} =~ /root=/, "id=$id, localhost do =~/root=/");

@@ -26,33 +26,28 @@ my @hosts=(
   'host-19'
 );
 my $id;
+$Parallel::Workers::WARN=1;
 #
 #LOCAL JOB
 ###################################################################################
-my $worker=Parallel::Workers->new(maxworkers=>5,timeout=>10, backend=>"Local");
+my $worker=Parallel::Workers->new(maxworkers=>15,timeout=>10, backend=>"Eval");
 ok(defined($worker),"new local worker");
 
-$id=$worker->create(hosts => \@hosts, command=>"`date`");
+$id=$worker->create(hosts => \@hosts, command=>"`date`", transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m});
 $info=$worker->info();
 ok($info->{$id}{'host-13'}{cmd} eq '`date`', "id=$id, host-13 command = `date` ");
-ok(!defined ($info->{$id}{'host-13'}{pre}), "id=$id, host-13 pre is UNDEF");
-ok(!defined ($info->{$id}{'host-13'}{post}), "id=$id, host-13 post is UNDEF");
-
+ok($info->{$id}{'host-13'}{do} =~ m/.+/, "id=$id, host-13 do =~ '/.+/' ");
 @hosts=(
   'host-1',
 );
 
-$id=$worker->create(hosts => \@hosts, 
-                  pre=>"system",preparams=>("\"echo 'Olivier' >/tmp/perl-test-olivier\""), 
-                  command=>"`cat /tmp/perl-test-olivier`", 
-                  post=>"system", postparams=>"\"rm /tmp/perl-test-olivier\"");
-
+$worker->clear;
+$id=$worker->create(hosts => \@hosts, command=>"`date2`", transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m});
 $info=$worker->info();
+ok($info->{$id}{'host-1'}{cmd} eq '`date2`', "id=$id, host-1 command = `date2` ");
+ok($info->{$id}{'host-1'}{do} ==undef, "id=$id, host-1 do == undef ");
 
-ok($info->{$id}{'host-1'}{pre}==0, "id=$id, host-1 post is 0");
-ok($info->{$id}{'host-1'}{post}==0, "id=$id, host-1 post is 0");
-ok($info->{$id}{'host-1'}{do} eq "Olivier\n", "id=$id, host-1 do eq Olivier");
-
+print Dumper $info;
 
 
 

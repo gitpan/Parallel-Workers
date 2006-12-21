@@ -39,11 +39,11 @@ sub pre {
 
 sub do {
   my ($this, $id, $host, $cmd ,$params)=@_;
-  print "ssh command ($cmd) open\n";
+  print "ssh command ($cmd) open\n" if $Parallel::Workers::WARN;
   my $ssh=_open($this->{user},$this->{password},$host);
-  print "ssh command ($cmd) start\n";
+  print "ssh command ($cmd) start\n" if $Parallel::Workers::WARN;
   my($stdout, $stderr, $exit) = $ssh->cmd($cmd);
-  print "ssh command ($cmd) done\n";
+  print "ssh command ($cmd) done\n" if $Parallel::Workers::WARN;
   return $stdout;
 }
 

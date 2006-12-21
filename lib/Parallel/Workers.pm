@@ -5,7 +5,7 @@ use strict;
 use Carp;
 use Scalar::Util qw(blessed dualvar isweak readonly refaddr reftype tainted
                         weaken isvstring looks_like_number set_prototype);
-use threads 1.39;
+use threads 1.39 ;
 use threads::shared;
 use Thread::Queue;
 use Data::Dumper;
@@ -15,15 +15,18 @@ use Parallel::Workers::Shared;
 
 use version; 
 
+no warnings 'threads';
 
-our (@ISA, @EXPORT, @EXPORT_OK, $VERSION);
+our (@ISA, @EXPORT, @EXPORT_OK, $VERSION, $WARN, $DEBUG);
 @ISA = qw(Exporter);
 
 @EXPORT = qw($VERSION);
 @EXPORT_OK = ();
 
-$VERSION = '0.0.5';
+$VERSION = '0.0.6';
 
+$WARN=0;
+$DEBUG=0;
 
 
 # Flag to inform all threads that application is terminating
@@ -39,26 +42,29 @@ my $shared_jobs;
 
 # maxworkers =>64 , maxjobs=>100, 
 # transport=> SSH|XMLRPC|LOCAL, constructor=>%options, 
-# transaction=>{pre=>CONT|EXIT, do=>CONT|EXIT, post =>CONT|EXIT}
+# timeout => max time to thread to live
 
 sub new {
     my $class:shared = shift;
     my %params = @_;
     my $this={};
     
-    shared_hash_set($this, "maxworkers",(defined($params{maxworkers}))?$params{maxworkers}:16);
-    shared_hash_set($this, "maxjobs", (defined($params{maxjobs}))?$params{maxjobs}:32);
-    shared_hash_set($this, "timeout", (defined($params{timeout}))?$params{timeout}:10);
-    shared_hash_set($this, "transaction", Parallel::Workers::Transaction->new(%{$params{transaction}}));
+#     shared_hash_set($this, "maxworkers",(defined($params{maxworkers}))?$params{maxworkers}:16);
+#     shared_hash_set($this, "maxjobs", (defined($params{maxjobs}))?$params{maxjobs}:32);
+#     shared_hash_set($this, "timeout", (defined($params{timeout}))?$params{timeout}:10);
+  
+    $this->{maxworkers}=(defined($params{maxworkers}))?$params{maxworkers}:16;
+    $this->{maxjobs}=(defined($params{maxjobs}))?$params{maxjobs}:32;
+    $this->{timeout}=(defined($params{timeout}))?$params{timeout}:10;
     
 # Wait for max timeout for threads to finish
+    
     my $backend=(defined $params{backend})?"Parallel::Workers::Backend::".$params{backend}:"Parallel::Workers::Backend::Null";
     
-    shared_hash_set($this,'jobsbackend',Parallel::Workers::Backend->new(backend=> $backend, constructor =>(defined $params{constructor})?%{$params{constructor}}:undef));
-#    $this->{jobsbackend}=;
-    
-    
-#    $this->{jobs}=%shared_jobs;
+    my %constructor=();
+    $constructor{backend}=$backend;
+    $constructor{constructor}=\%{$params{constructor}} if defined $params{constructor};
+    $this->{jobsbackend}=Parallel::Workers::Backend->new(%constructor);
     bless $this, $class;
     
     return $this;
@@ -75,36 +81,38 @@ sub create{
   my $this = shift;
   my %params = @_;
   
+#   shared_hash_set($this, "transaction", Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:undef));  
+  $this->{transaction}=Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:enable=>0);
   my @hosts=@{$params{hosts}};
   my $totaljobs=@hosts;
   my $jobs=0;
   my $current_job=0;
   # Manage the thread pool until signalled to terminate
-  my $id=__genid();
-  my $commands;
+  my $id:shared=__genid();
+  my $commands={ 
+                    cmd=>$params{command}, params=>$params{params}, 
+                    pre=>$params{pre}, preparams=>$params{preparams},
+                    post=>$params{post}, postparams=>$params{postparams}
+  };
   $shared_jobs->{$id}=&share({});
   $shared_jobs->{$id}->{time}=time();
-  $this->{transaction}->commit;
-  while (! $TERM && $totaljobs && $this->{transaction}->status() ne "error") {
-    $jobs=($totaljobs>$this->{maxworkers})?$this->{maxworkers}:$totaljobs;
-    $totaljobs-=$jobs;
-    $this->{transaction}->start($jobs);
-    for ($jobs=$jobs;$jobs && ! $TERM;$jobs--){
-      # New thread
-      
-      $commands=  { 
-                     cmd=>$params{command}, params=>$params{params}, 
-                     pre=>$params{pre}, preparams=>$params{preparams},
-                     post=>$params{post}, postparams=>$params{postparams}
-                   };
-      threads->new('jobworker', $this, $shared_jobs->{$id}, $id, $hosts[$current_job++], $commands,$this->{transaction});
-
+  lock ($id);
+  
+  while (! $TERM && $totaljobs ) {
+    # New thread
+    
+    threads->new('jobworker', $this, $shared_jobs->{$id}, \$id, $hosts[$current_job++], $commands,$this->{transaction});
+    $totaljobs--;
+    if ($this->{maxworkers}<=threads->list()){
+    #WAITING FOR A NEW THREAD
+      print "#WAITING FOR A THREAD EXIT\n" if $WARN;
+      cond_wait($id);
     }
-    #waiting the end of the pool
-    $this->join();
-    $this->{transaction}->commit();
+    
   }
-  print "terminated\n";
+  #waiting the end of the pool
+  $this->join();
+  print "job terminated\n" if $WARN;
   return $id;
 }
 
@@ -157,42 +165,67 @@ sub jobworker{
   $host{cmd}=$params->{cmd};
   $host{params}=$params->{params};
   shared_hash_set($job,$host,\%host);
-#  $job->{$host}=shared_share(\%host);
   eval{
+  
+#   Run preprocessing task
+##########################
     if (defined $params->{pre}){
       $job->{$host}->{status}="preprocessing";
       my $pre=$this->{jobsbackend}->pre($id, $host, $params->{pre}, $params->{preparams});
       $job->{$host}->{pre}=shared_share($pre);
-      $transaction->put($tid,$pre);
 
-      if ($transaction->continue("pre") eq TRANSACTION_TERM){
-        print ">>>>>>>>>>transaction return TRANSACTION_TERM\n";
-        $job->{$host}->{status}="transaction term";
+      if ($transaction->check($tid,$pre) eq "TRANSACTION_TERM"){
+        print ">>>>>>>>>>transaction for thread($tid) on preprocessing return TRANSACTION_TERM\n" if $WARN==1;
+        $job->{$host}->{status}=TRANSACTION_TERM;
+        shared_hash_set($job,"pre",TRANSACTION_TERM);
+        $TERM=1;
+        cond_broadcast($$id);
+        threads->exit(0);
         return;
       }
-    }
+    }  
+#   Run processing task
+##########################
     $job->{$host}->{status}="processing";
-    my $do=$this->{jobsbackend}->do($id, $host, $params->{cmd}, $params->{params});
-    $transaction->put($tid,$do);
+    my $do=$this->{jobsbackend}->do($$id, $host, $params->{cmd}, $params->{params});
     $job->{$host}->{do}=shared_share($do);
-    if ($transaction->continue("do") eq TRANSACTION_TERM){
-      print ">>>>>>>>>>transaction return TRANSACTION_TERM\n";
-      $job->{$host}->{status}="transaction term";
+    if ($transaction->check($tid,$do) eq "TRANSACTION_TERM"){
+      print ">>>>>>>>>>transaction for thread($tid) on processing return TRANSACTION_TERM\n" if $WARN==1;
+      $job->{$host}->{status}=TRANSACTION_TERM;
+      shared_hash_set($job,"do",TRANSACTION_TERM);
+      $TERM=1;
+      cond_broadcast($$id);
+      threads->exit(0);
       return;
     }
-    
-    
+#   Run postprocessing task
+##########################
     if (defined $params->{post}){
       $job->{$host}->{status}="postprocessing";
       my $post=$this->{jobsbackend}->post($id, $host, $params->{post}, $params->{postparams});
       $job->{$host}->{post}=shared_share($post);
-    }
+      if ($transaction->check($tid,$post) eq "TRANSACTION_TERM"){
+        print ">>>>>>>>>>transaction for thread($tid) on postprocessing return TRANSACTION_TERM\n" if $WARN==1;
+        $job->{$host}->{status}=TRANSACTION_TERM;
+        shared_hash_set($job,"post",TRANSACTION_TERM);
+        $TERM=1;
+        cond_broadcast($$id);
+        threads->exit(0);
+        return;
+      }
+      
+    }    
   }; 
   if ($@){
     $job->{$host}->{error}=$@;
     $job->{$host}->{status}="error";
+    print STDERR $job->{$host}->{error}."\n" if $WARN;
+    cond_broadcast($$id);
+    threads->exit(0);
+    return;
   }
   $job->{$host}->{status}="done";
+  cond_broadcast($$id);
   return;
 }
 
@@ -224,30 +257,67 @@ __END__
 
 =head1 NAME
 
-Parallel::Workers - [One line description of module's purpose here]
+Parallel::Workers - run workers in parallel. Workers can be Eval, SSH, XMLRPC or Your commands
 
 
 =head1 VERSION
 
-This document describes Parallel::Workers version 0.0.1
+This document describes Parallel::Workers version I<$VERSION>
+
 
 
 =head1 SYNOPSIS
 
     use Parallel::Workers;
+    
+    #Workers that use Eval action with a trantransaction controller
+    #                 ^^^^
+    
+    my $worker=Parallel::Workers->new(maxworkers=>4,timeout=>10, backend=>"Eval");
 
-=for author to fill in:
-    Brief code example(s) here showing commonest usage(s).
-    This section will be as far as many users bother reading
-    so make it as educational and exeplary as possible.
+    my $id=$worker->create(hosts => \@named, command=>"`date`", 
+                           transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m});
+    my $info=$worker->info();
+    
+    #Workers that use SSH action with a trantransaction controller
+    #                 ^^^
+    $worker=Parallel::Workers->new(
+                                    maxworkers=>16,timeout=>10, 
+                                    backend=>"SSH", constructor =>{user=>'demo',pass=>'demo'}
+                                  );
+
+
+    $id=$worker->create(hosts => \@hosts, command=>"cat /proc/cmdline",
+                                      transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m}); 
+
   
   
 =head1 DESCRIPTION
 
-=for author to fill in:
-    Write a full description of the module and its features here.
-    Use subsections (=head2, =head3) as appropriate.
+This I<Parallel::Workers> allow you to run multiples tasks in parallel with an error validation.
 
+You can specify maxworkers value that limit the max physical threads. You can specify the backend 
+that run the task, currently only Eval, SSH and XMLRPC are implemented, but you can make yours 
+for your needs.
+
+Workers run simples tasks that return value. You can specify different way to check the return value and 
+on error you decide to stop or continue the main workers.
+
+        # workers TERM if return value is not in this regex /.+/m
+        $id=$worker->create(...,
+                            transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m }; 
+        
+        # workers TERM if return value is not 127
+        $id=$worker->create(...,
+                            transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',check => 127}; 
+
+        # workers TERM if return value is not an HASH
+        $id=$worker->create(...,
+                            transaction=>{error=>TRANSACTION_TERM, type=>'ARRAY'}; 
+
+        # workers CONTINUE on error
+        $id=$worker->create(...,
+                            transaction=>{error=>TRANSACTION_CONT, ...}; 
 
 =head1 INTERFACE 
 

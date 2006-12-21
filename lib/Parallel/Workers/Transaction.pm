@@ -17,94 +17,50 @@ use constant TRANSACTION_CONT=>"CONT";
 use constant TRANSACTION_TERM=>"TERM";
 
 
-our $locker:shared=0;
 # Module implementation here
 # init the transaction for n workers 
-# pre=>CONT|TERM, do =>CONT|TERM, post=>CONT|TERM
+# error=>TRANSACTION_CONT, enable=>1, type => SCALAR,check => 0, regex=> undef
 sub new {
     my $class:shared = shift;
     my %args = @_;
 
-    my $this={};
-    my $locker:shared=0;
-    shared_hash_set($this,'workers',{});  
-    shared_hash_set($this,'count',0);  
-    shared_hash_set($this,'pre',(defined ($args{pre}))?$args{pre}:TRANSACTION_CONT );  
-    shared_hash_set($this,'do',(defined ($args{do}))?$args{do}:TRANSACTION_CONT);  
-    shared_hash_set($this,'post',(defined ($args{post}))?$args{post}:TRANSACTION_CONT );  
-    shared_hash_set($this,'enable',(defined ($args{enable}))?$args{enable}:0);  
-    shared_hash_set($this,'status','end');  
-    
+    my $this={ 
+              error =>(defined $args{error})?$args{error}:TRANSACTION_CONT,
+              enable=>(defined $args{enable})?$args{enable}:1,
+              type  =>(defined $args{type})?$args{type}:"SCALAR",
+              check =>$args{check},
+              regex =>$args{regex}
+             };
+              
+          
     bless $this, $class;
     return $this;
 }
 
-sub commit{
-  my $this=shift;
-  shared_hash_set($this,'workers',{});  
-  $this->{count}=0;
-  $this->{status}="init";
-  return $this;
-}
 
-sub start{
-  my $this=shift;
-  my ($count)=@_;
-  $this->{count}=$count;
-  $this->{status}="start";
-  return $this;
-}
-
-sub end{
-  my $this=shift;
-  $this->{status}="end";
-  return $this;
-}
-
-sub status{
-  my $this=shift;
-  return $this->{status};
-}
-
-
-
-sub put{
+sub check{
   my $this=shift;
   my ($tid, $result)=@_;
-  shared_hash_set($this->{workers},$tid,$result);
   
- lock($locker);
-  print "put new result for tid=$tid\n";
-# signal that work is done
-  if((values %{$this->{workers}})>=$this->{count}){
-    print "signal that job  is terminated...";
-    cond_broadcast($locker) ;
-    print "done.\n";
-  }
-  return $this;
-}
-
-# block the current thread until other have finished
-sub continue{
-  my $this=shift;
-  my ($cmd)=@_;  #pre,do,post
   return TRANSACTION_CONT unless $this->{enable};
   
- lock($locker);
-  if((values %{$this->{workers}})<$this->{count}){
-    print "waiting for all results (current ".(values %{$this->{workers}}).")\n";
-    cond_wait($locker);
-    print "all results are here!\n";
-  }
+  return $this->{error} unless ($this->{type} eq ref(\$result));
   
-#check if work is well done !!
-  print "check transaction end (".(keys %{$this->{workers}}).")\n";
-  foreach my $tid (keys %{$this->{workers}}){
-#    print "return error :".$this->{$cmd}.", for tid=".$this->{workers}->{$tid}."\n";
-    $this->{status} ="error" && return $this->{$cmd} if ($this->{workers}->{$tid} ne "0");
-  }
+  if (defined $this->{regex}){
+    my $reg=qr/$this->{regex}/;
+#    my $reg=qr/$this->{regex}/;
+#    print "INFO:regex detected".$this->{regex}."\n" unless defined $result || $result=~ $reg ;
+    return $this->{error} unless defined $result ;
+    return $this->{error} unless $result=~ $this->{regex} ;
+}
+   
+  if (defined $this->{check}){
+   return $this->{error} unless $result=$this->{check};
+  } 
+  
   return TRANSACTION_CONT;
 }
+
 
 
 1; # Magic true value required at end of module

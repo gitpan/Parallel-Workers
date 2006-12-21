@@ -1,13 +1,60 @@
 NAME
-    Parallel::Workers - [One line description of module's purpose here]
+    Parallel::Workers - run workers in parallel. Workers can be Eval, SSH,
+    XMLRPC or Your commands
 
 VERSION
-    This document describes Parallel::Workers version 0.0.1
+    This document describes Parallel::Workers version *$VERSION*
 
 SYNOPSIS
         use Parallel::Workers;
+    
+        #Workers that use Eval action with a trantransaction controller
+        #                 ^^^^
+    
+        my $worker=Parallel::Workers->new(maxworkers=>4,timeout=>10, backend=>"Eval");
+
+        my $id=$worker->create(hosts => \@named, command=>"`date`", 
+                               transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m});
+        my $info=$worker->info();
+    
+        #Workers that use SSH action with a trantransaction controller
+        #                 ^^^
+        $worker=Parallel::Workers->new(
+                                        maxworkers=>16,timeout=>10, 
+                                        backend=>"SSH", constructor =>{user=>'demo',pass=>'demo'}
+                                      );
+
+        $id=$worker->create(hosts => \@hosts, command=>"cat /proc/cmdline",
+                                          transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m}); 
 
 DESCRIPTION
+    This *Parallel::Workers* allow you to run multiples tasks in parallel
+    with an error validation.
+
+    You can specify maxworkers value that limit the max physical threads.
+    You can specify the backend that run the task, currently only Eval, SSH
+    and XMLRPC are implemented, but you can make yours for your needs.
+
+    Workers run simples tasks that return value. You can specify different
+    way to check the return value and on error you decide to stop or
+    continue the main workers.
+
+            # workers TERM if return value is not in this regex /.+/m
+            $id=$worker->create(...,
+                                transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m }; 
+        
+            # workers TERM if return value is not 127
+            $id=$worker->create(...,
+                                transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',check => 127}; 
+
+            # workers TERM if return value is not an HASH
+            $id=$worker->create(...,
+                                transaction=>{error=>TRANSACTION_TERM, type=>'ARRAY'}; 
+
+            # workers CONTINUE on error
+            $id=$worker->create(...,
+                                transaction=>{error=>TRANSACTION_CONT, ...}; 
+
 INTERFACE
 DIAGNOSTICS
     "Error message here, perhaps with %s placeholders"

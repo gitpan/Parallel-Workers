@@ -1,9 +1,9 @@
 ---
 name: Parallel-Workers
-version: 0.0.5
+version: 0.0.6
 author:
   - Olivier Evalet <evaleto@gelux.ch>
-abstract: "[One line description of module's purpose here]"
+abstract: 'run workers in parallel. Workers can be Eval, SSH, XMLRPC or Your commands'
 license: lgpl
 resources:
   license: http://opensource.org/licenses/artistic-license.php
@@ -17,11 +17,11 @@ requires:
 provides:
   Parallel::Workers:
     file: lib/Parallel/Workers.pm
-    version: 0.0.5
+    version: 0.0.6
   Parallel::Workers::Backend:
     file: lib/Parallel/Workers/Backend.pm
-  Parallel::Workers::Backend::Local:
-    file: lib/Parallel/Workers/Backend/Local.pm
+  Parallel::Workers::Backend::Eval:
+    file: lib/Parallel/Workers/Backend/Eval.pm
   Parallel::Workers::Backend::Null:
     file: lib/Parallel/Workers/Backend/Null.pm
   Parallel::Workers::Backend::SSH:
