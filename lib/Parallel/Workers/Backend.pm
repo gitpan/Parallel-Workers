@@ -54,9 +54,9 @@ __END__
 
 =head1 NAME
 
-Parallel::Workers::Backend - The backend is a plugins mechanism to run the wrokers task. 
-Default plugins are implemented for Eval, SSH and XMLRPC tasks. To add you plugin you just
-need to make a module name in the Parallel::Backend::YourTaskModule
+Parallel::Workers::Backend - The backend is a plugins mechanism to run the worker tasks. 
+Default plugins are implemented for Eval (CODE), SSH and XMLRPC tasks. You can add your own plugin 
+with module name Parallel::Backend::YourTaskModule
 
 
 =head1 VERSION

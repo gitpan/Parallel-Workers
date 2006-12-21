@@ -23,7 +23,7 @@ our (@ISA, @EXPORT, @EXPORT_OK, $VERSION, $WARN, $DEBUG);
 @EXPORT = qw($VERSION);
 @EXPORT_OK = ();
 
-$VERSION = '0.0.6';
+$VERSION = '0.0.7';
 
 $WARN=0;
 $DEBUG=0;
@@ -257,7 +257,8 @@ __END__
 
 =head1 NAME
 
-Parallel::Workers - run workers in parallel. Workers can be Eval, SSH, XMLRPC or Your commands
+Parallel::Workers - run worker tasks in parallel. Worker task is a plugin that you
+can implement. The availables are Eval for CODE, SSH and XMLRPC.
 
 
 =head1 VERSION
@@ -294,14 +295,14 @@ This document describes Parallel::Workers version I<$VERSION>
   
 =head1 DESCRIPTION
 
-This I<Parallel::Workers> allow you to run multiples tasks in parallel with an error validation.
+This I<Parallel::Workers> allow you to run multiples tasks in parallel with or without error check (see I<Parallel::Workers::Transaction>).
 
-You can specify maxworkers value that limit the max physical threads. You can specify the backend 
+You can specify maxworkers value that limit the max parallel task (threads pool). You can specify the backend 
 that run the task, currently only Eval, SSH and XMLRPC are implemented, but you can make yours 
 for your needs.
 
 Workers run simples tasks that return value. You can specify different way to check the return value and 
-on error you decide to stop or continue the main workers.
+on error you decide to stop or continue the main workers (see  I<Parallel::Workers::Transaction>).
 
         # workers TERM if return value is not in this regex /.+/m
         $id=$worker->create(...,
@@ -319,15 +320,30 @@ on error you decide to stop or continue the main workers.
         $id=$worker->create(...,
                             transaction=>{error=>TRANSACTION_CONT, ...}; 
 
-=head1 INTERFACE 
 
-=for author to fill in:
-    Write a separate section listing the public components of the modules
-    interface. These normally consist of either subroutines that may be
-    exported, or methods that may be called on objects belonging to the
-    classes provided by the module.
+=head1 METHODS
 
+=head2 new([%h])
 
+Constructor. %h is a hash of attributes :
+
+    maxworkers:16 , the max parallel tasks (threads)
+    timeout:10, the time in second before to kill thread (only when stop workers)
+    backend:undef, the task 
+    constructor:undef, the task constructor
+    
+=head2 info()
+
+  return all workers results
+  
+=head2 create(hosts => @hosts, spawn=>0, command=>$cmd, params=>%h|@a|$r, transaction=>%h)
+  
+=head2 stop
+    
+=head2 clear
+
+=head2 join
+    
 =head1 DIAGNOSTICS
 
 =for author to fill in:

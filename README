@@ -1,6 +1,7 @@
 NAME
-    Parallel::Workers - run workers in parallel. Workers can be Eval, SSH,
-    XMLRPC or Your commands
+    Parallel::Workers - run worker tasks in parallel. Worker task is a
+    plugin that you can implement. The availables are Eval for CODE, SSH and
+    XMLRPC.
 
 VERSION
     This document describes Parallel::Workers version *$VERSION*
@@ -29,15 +30,16 @@ SYNOPSIS
 
 DESCRIPTION
     This *Parallel::Workers* allow you to run multiples tasks in parallel
-    with an error validation.
+    with or without error check (see *Parallel::Workers::Transaction*).
 
-    You can specify maxworkers value that limit the max physical threads.
-    You can specify the backend that run the task, currently only Eval, SSH
-    and XMLRPC are implemented, but you can make yours for your needs.
+    You can specify maxworkers value that limit the max parallel task
+    (threads pool). You can specify the backend that run the task, currently
+    only Eval, SSH and XMLRPC are implemented, but you can make yours for
+    your needs.
 
     Workers run simples tasks that return value. You can specify different
     way to check the return value and on error you decide to stop or
-    continue the main workers.
+    continue the main workers (see *Parallel::Workers::Transaction*).
 
             # workers TERM if return value is not in this regex /.+/m
             $id=$worker->create(...,
@@ -55,7 +57,22 @@ DESCRIPTION
             $id=$worker->create(...,
                                 transaction=>{error=>TRANSACTION_CONT, ...}; 
 
-INTERFACE
+METHODS
+  new([%h])
+    Constructor. %h is a hash of attributes :
+
+        maxworkers:16 , the max parallel tasks (threads)
+        timeout:10, the time in second before to kill thread (only when stop workers)
+        backend:undef, the task 
+        constructor:undef, the task constructor
+    
+  info()
+      return all workers results
+  
+  create(hosts => @hosts, spawn=>0, command=>$cmd, params=>%h|@a|$r, transaction=>%h)
+  stop
+  clear
+  join
 DIAGNOSTICS
     "Error message here, perhaps with %s placeholders"
         [Description of error here]
