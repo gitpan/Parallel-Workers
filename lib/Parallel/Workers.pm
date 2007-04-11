@@ -23,7 +23,7 @@ our (@ISA, @EXPORT, @EXPORT_OK, $VERSION, $WARN, $DEBUG);
 @EXPORT = qw($VERSION);
 @EXPORT_OK = ();
 
-$VERSION = '0.0.7';
+$VERSION = '0.0.8';
 
 $WARN=0;
 $DEBUG=0;
@@ -82,7 +82,7 @@ sub create{
   my %params = @_;
   
 #   shared_hash_set($this, "transaction", Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:undef));  
-  $this->{transaction}=Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:enable=>0);
+  $this->{transaction}=Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:{enable=>0});
   my @hosts=@{$params{hosts}};
   my $totaljobs=@hosts;
   my $jobs=0;

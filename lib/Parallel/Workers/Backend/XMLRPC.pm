@@ -3,17 +3,16 @@ package Parallel::Workers::Backend::XMLRPC;
 use warnings;
 use strict;
 use Carp;
-use Frontier::Client;
+
+use RPC::XML;
+use RPC::XML::Client;
+
 use Data::Dumper;
  
 sub new {
   my $class = shift;
   my %params=@_;
-  
-  my $server = Frontier::Client->new( url => $params{host} , encoding => 'ISO-8859-1');
-  my $self = {server => $server};
-  bless $self, $class;
-
+  my $self = {};
   return $self;
 }
 
@@ -23,24 +22,39 @@ sub DESTROY {
 
 
 sub pre {
-  my $self = shift;
-  my %params = @_;
-  my $exit = $server->call($params{method}, $params{args});
-  return $exit;
+  my ($self, $host, $cmd, @args) = @_;
+  my  $cli = RPC::XML::Client->new('http://'.$host.'/RPCSERV');
+  my  $resp = $cli->send_request($cmd,@args);
+
+  if(ref $resp) {
+    return join(', ', @{$resp->value})
+  }else{
+    return "ERROR:$resp";
+  }
 }
 
 sub do {
-  my $self = shift;
-  my %params = @_;
-  my $exit = $server->call($params{method}, $params{args});
-  return $exit;
+  my ($self, $host, $cmd, @args) = @_;
+  my  $cli = RPC::XML::Client->new('http://'.$host.'/RPCSERV');
+  my  $resp = $cli->send_request($cmd,@args);
+  if(ref $resp) {
+    return join(', ', @{$resp->value})
+  }else{
+    return "ERROR:$resp";
+  }
 }
 
 sub post {
-  my $self = shift;
-  my %params = @_;
-  my $exit = $server->call($params{method}, $params{args});
-  return $exit;
+  my ($self, $host, $cmd, @args) = @_;
+  my  $cli = RPC::XML::Client->new('http://'.$host.'/RPCSERV');
+  my  $resp = $cli->send_request($cmd,@args);
+
+  print ref $resp ? join(', ', @{$resp->value}) : "Error: $resp";  
+  if(ref $resp) {
+    return join(', ', @{$resp->value})
+  }else{
+    return "ERROR:$resp";
+  }
 }
 
 1; # Magic true value required at end of module

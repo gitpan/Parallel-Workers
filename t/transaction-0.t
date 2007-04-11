@@ -1,4 +1,4 @@
-use Test::More tests => 8;
+use Test::More tests => 7;
 
 use_ok( 'Parallel::Workers' );
 use_ok( 'Parallel::Workers::Transaction' );
