@@ -23,7 +23,7 @@ our (@ISA, @EXPORT, @EXPORT_OK, $VERSION, $WARN, $DEBUG);
 @EXPORT = qw($VERSION);
 @EXPORT_OK = ();
 
-$VERSION = '0.0.8';
+$VERSION = '0.0.9';
 
 $WARN=0;
 $DEBUG=0;

@@ -1,6 +1,6 @@
 ---
 name: Parallel-Workers
-version: 0.0.8
+version: 0.0.9
 author:
   - Olivier Evalet <evaleto@gelux.ch>
 abstract: |-
@@ -19,7 +19,7 @@ requires:
 provides:
   Parallel::Workers:
     file: lib/Parallel/Workers.pm
-    version: 0.0.8
+    version: 0.0.9
   Parallel::Workers::Backend:
     file: lib/Parallel/Workers/Backend.pm
   Parallel::Workers::Backend::Eval:

@@ -11,6 +11,7 @@ lib/Parallel/Workers/Backend/SSH.pm
 lib/Parallel/Workers/Backend/Eval.pm
 lib/Parallel/Workers/Backend/Null.pm
 lib/Parallel/Workers/Backend/XMLRPC.pm
+lib/Parallel/Workers/Backend/FrontierRPC.pm
 t/00.load.t
 t/process-0.t
 t/ssh-0.t
