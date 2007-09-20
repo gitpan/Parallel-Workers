@@ -3,435 +3,456 @@ package Parallel::Workers;
 use warnings;
 use strict;
 use Carp;
-use Scalar::Util qw(blessed dualvar isweak readonly refaddr reftype tainted
-                        weaken isvstring looks_like_number set_prototype);
-use threads 1.39 ;
-use threads::shared;
-use Thread::Queue;
-use Data::Dumper;
-use Parallel::Workers::Transaction;
-use Parallel::Workers::Backend;
-use Parallel::Workers::Shared;
+use Storable qw( store_fd fd_retrieve );
+use IO::Handle;
+use IO::Select;
+use Config;
 
-use version; 
+require 5.008;
 
-no warnings 'threads';
+our $VERSION = '0.1.0';
+use base qw( Exporter );
+our @EXPORT_OK = qw( iterate iterate_as_array iterate_as_hash );
 
-our (@ISA, @EXPORT, @EXPORT_OK, $VERSION, $WARN, $DEBUG);
-@ISA = qw(Exporter);
-
-@EXPORT = qw($VERSION);
-@EXPORT_OK = ();
-
-$VERSION = '0.0.9';
-
-$WARN=0;
-$DEBUG=0;
-
-
-# Flag to inform all threads that application is terminating
-my $TERM :shared = 0;
-
-# Prevents double detach attempts
-my $DETACHING :shared;
-
-my $ID:shared = 0;
-
-my $shared_jobs;
-
-
-# maxworkers =>64 , maxjobs=>100, 
-# transport=> SSH|XMLRPC|LOCAL, constructor=>%options, 
-# timeout => max time to thread to live
-
-sub new {
-    my $class:shared = shift;
-    my %params = @_;
-    my $this={};
-    
-#     shared_hash_set($this, "maxworkers",(defined($params{maxworkers}))?$params{maxworkers}:16);
-#     shared_hash_set($this, "maxjobs", (defined($params{maxjobs}))?$params{maxjobs}:32);
-#     shared_hash_set($this, "timeout", (defined($params{timeout}))?$params{timeout}:10);
-  
-    $this->{maxworkers}=(defined($params{maxworkers}))?$params{maxworkers}:16;
-    $this->{maxjobs}=(defined($params{maxjobs}))?$params{maxjobs}:32;
-    $this->{timeout}=(defined($params{timeout}))?$params{timeout}:10;
-    
-# Wait for max timeout for threads to finish
-    
-    my $backend=(defined $params{backend})?"Parallel::Workers::Backend::".$params{backend}:"Parallel::Workers::Backend::Null";
-    
-    my %constructor=();
-    $constructor{backend}=$backend;
-    $constructor{constructor}=\%{$params{constructor}} if defined $params{constructor};
-    $this->{jobsbackend}=Parallel::Workers::Backend->new(%constructor);
-    bless $this, $class;
-    
-    return $this;
-}
-
-sub clear{
-  my $this = shift;
-  $shared_jobs={};
-}
-
-# hosts => @hosts, command=>, params=>
-# return $jobid
-sub create{
-  my $this = shift;
-  my %params = @_;
-  
-#   shared_hash_set($this, "transaction", Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:undef));  
-  $this->{transaction}=Parallel::Workers::Transaction->new((defined $params{transaction})?%{$params{transaction}}:{enable=>0});
-  my @hosts=@{$params{hosts}};
-  my $totaljobs=@hosts;
-  my $jobs=0;
-  my $current_job=0;
-  # Manage the thread pool until signalled to terminate
-  my $id:shared=__genid();
-  my $commands={ 
-                    cmd=>$params{command}, params=>$params{params}, 
-                    pre=>$params{pre}, preparams=>$params{preparams},
-                    post=>$params{post}, postparams=>$params{postparams}
-  };
-  $shared_jobs->{$id}=&share({});
-  $shared_jobs->{$id}->{time}=time();
-  lock ($id);
-  
-  while (! $TERM && $totaljobs ) {
-    # New thread
-    
-    threads->new('jobworker', $this, $shared_jobs->{$id}, \$id, $hosts[$current_job++], $commands,$this->{transaction});
-    $totaljobs--;
-    if ($this->{maxworkers}<=threads->list()){
-    #WAITING FOR A NEW THREAD
-      print "#WAITING FOR A THREAD EXIT\n" if $WARN;
-      cond_wait($id);
-    }
-    
-  }
-  #waiting the end of the pool
-  $this->join();
-  print "job terminated\n" if $WARN;
-  return $id;
-}
-
-# wait infinity for the end of workers
-sub join{
-  my $self = shift;
-  my %params = @_;
-  foreach my $thr (threads->list()) {
-    $thr->join() ;
-  }
-}
-
-# stop the current pool after the timeout done
-sub stop{
-  my $this = shift;
-  my %params = @_;
-  $TERM=1;
-  
-  ### CLEANING UP ###
-
-  # Wait for max timeout for threads to finish
-  while ((threads->list() > 0) && $this->{timeout}--) {
-    sleep(1);
-  }
-
-  # Detach and kill any remaining threads
-  foreach my $thr (threads->list()) {
-    lock($DETACHING);
-    $thr->detach() if ! $thr->is_detached();
-    $thr->kill('KILL');
-  }  
-  $TERM=0;
-}
-
-sub info{
-  my $this = shift;
-  return $shared_jobs;
-#  return $shared_jobs;
-}
-
-sub __genid{
-  return "$$-".$ID++;
-}
-
-#private fonction called by thread
-sub jobworker{
-  my ($this, $job, $id, $host, $params, $transaction)=@_;
-  my $tid = threads->tid();
-  my %host;
-  $host{cmd}=$params->{cmd};
-  $host{params}=$params->{params};
-  shared_hash_set($job,$host,\%host);
-  eval{
-  
-#   Run preprocessing task
-##########################
-    if (defined $params->{pre}){
-      $job->{$host}->{status}="preprocessing";
-      my $pre=$this->{jobsbackend}->pre($id, $host, $params->{pre}, $params->{preparams});
-      $job->{$host}->{pre}=shared_share($pre);
-
-      if ($transaction->check($tid,$pre) eq "TRANSACTION_TERM"){
-        print ">>>>>>>>>>transaction for thread($tid) on preprocessing return TRANSACTION_TERM\n" if $WARN==1;
-        $job->{$host}->{status}=TRANSACTION_TERM;
-        shared_hash_set($job,"pre",TRANSACTION_TERM);
-        $TERM=1;
-        cond_broadcast($$id);
-        threads->exit(0);
-        return;
-      }
-    }  
-#   Run processing task
-##########################
-    $job->{$host}->{status}="processing";
-    my $do=$this->{jobsbackend}->do($$id, $host, $params->{cmd}, $params->{params});
-    $job->{$host}->{do}=shared_share($do);
-    if ($transaction->check($tid,$do) eq "TRANSACTION_TERM"){
-      print ">>>>>>>>>>transaction for thread($tid) on processing return TRANSACTION_TERM\n" if $WARN==1;
-      $job->{$host}->{status}=TRANSACTION_TERM;
-      shared_hash_set($job,"do",TRANSACTION_TERM);
-      $TERM=1;
-      cond_broadcast($$id);
-      threads->exit(0);
-      return;
-    }
-#   Run postprocessing task
-##########################
-    if (defined $params->{post}){
-      $job->{$host}->{status}="postprocessing";
-      my $post=$this->{jobsbackend}->post($id, $host, $params->{post}, $params->{postparams});
-      $job->{$host}->{post}=shared_share($post);
-      if ($transaction->check($tid,$post) eq "TRANSACTION_TERM"){
-        print ">>>>>>>>>>transaction for thread($tid) on postprocessing return TRANSACTION_TERM\n" if $WARN==1;
-        $job->{$host}->{status}=TRANSACTION_TERM;
-        shared_hash_set($job,"post",TRANSACTION_TERM);
-        $TERM=1;
-        cond_broadcast($$id);
-        threads->exit(0);
-        return;
-      }
-      
-    }    
-  }; 
-  if ($@){
-    $job->{$host}->{error}=$@;
-    $job->{$host}->{status}="error";
-    print STDERR $job->{$host}->{error}."\n" if $WARN;
-    cond_broadcast($$id);
-    threads->exit(0);
-    return;
-  }
-  $job->{$host}->{status}="done";
-  cond_broadcast($$id);
-  return;
-}
-
-
-### Signal Handling ###
-
-# Gracefully terminate application on ^C
-# or command line 'kill'
-# $SIG{'INT'} = $SIG{'TERM'} =
-#     sub {
-#         print(">>> Terminating <<<\n");
-#         $TERM = 1;
-# };
-
-# This signal handler is called inside threads
-# that get cancelled by the timer thread
-# $SIG{'KILL'} =
-#     sub {
-# # Tell user we've been terminated
-#         printf("           %3d <- Killed\n", threads->tid());
-# # Detach and terminate
-#         lock($DETACHING);
-#         threads->detach() if ! threads->is_detached();
-#         threads->exit();
-# };
-
-1; # Magic true value required at end of module
-__END__
+my %DEFAULTS = ( workers => ( $Config{d_fork} ? 10 : 0 ) );
 
 =head1 NAME
 
-Parallel::Workers - run worker tasks in parallel. Worker task is a plugin that you
-can implement. The availables are Eval for CODE, SSH and XMLRPC.
-
+Parallel::Workers - Simple parallel execution
 
 =head1 VERSION
 
-This document describes Parallel::Workers version I<$VERSION>
-
-
+This document describes Parallel::Workers version 0.1.0
 
 =head1 SYNOPSIS
 
-    use Parallel::Workers;
+    use Parallel::Workers qw( iterate );
+
+    # A very expensive way to double 100 numbers...
     
-    #Workers that use Eval action with a trantransaction controller
-    #                 ^^^^
+    my @nums = ( 1 .. 100 );
     
-    my $worker=Parallel::Workers->new(maxworkers=>4,timeout=>10, backend=>"Eval");
-
-    my $id=$worker->create(hosts => \@named, command=>"`date`", 
-                           transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m});
-    my $info=$worker->info();
+    my $iter = iterate( sub {
+        my ( $id, $job ) = @_;
+        return $job * 2;
+    }, \@nums );
     
-    #Workers that use SSH action with a trantransaction controller
-    #                 ^^^
-    $worker=Parallel::Workers->new(
-                                    maxworkers=>16,timeout=>10, 
-                                    backend=>"SSH", constructor =>{user=>'demo',pass=>'demo'}
-                                  );
-
-
-    $id=$worker->create(hosts => \@hosts, command=>"cat /proc/cmdline",
-                                      transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m}); 
-
-  
+    my @out = ();
+    while ( my ( $index, $value ) = $iter->() ) {
+        $out[$index] = $value;
+    }
   
 =head1 DESCRIPTION
 
-This I<Parallel::Workers> allow you to run multiples tasks in parallel with or without error check (see I<Parallel::Workers::Transaction>).
+The C<map> function applies a user supplied transformation function to
+each element in a list, returning a new list containing the
+transformed elements.
 
-You can specify maxworkers value that limit the max parallel task (threads pool). You can specify the backend 
-that run the task, currently only Eval, SSH and XMLRPC are implemented, but you can make yours 
-for your needs.
+This module provides a 'parallel map'. Multiple worker processes are
+forked so that many instances of the transformation function may be
+executed simultaneously. 
 
-Workers run simples tasks that return value. You can specify different way to check the return value and 
-on error you decide to stop or continue the main workers (see  I<Parallel::Workers::Transaction>).
+For time consuming operations, particularly operations that spend most
+of their time waiting for I/O, this is a big performance win. It also
+provides a simple idiom to make effective use of multi CPU systems.
 
-        # workers TERM if return value is not in this regex /.+/m
-        $id=$worker->create(...,
-                            transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',regex => qr/.+/m }; 
-        
-        # workers TERM if return value is not 127
-        $id=$worker->create(...,
-                            transaction=>{error=>TRANSACTION_TERM, type=>'SCALAR',check => 127}; 
+There is, however, a considerable overhead associated with forking, so
+the example in the synopsis (doubling a list of numbers) is I<not> a
+sensible use of this module.
 
-        # workers TERM if return value is not an HASH
-        $id=$worker->create(...,
-                            transaction=>{error=>TRANSACTION_TERM, type=>'ARRAY'}; 
+=head2 Example
 
-        # workers CONTINUE on error
-        $id=$worker->create(...,
-                            transaction=>{error=>TRANSACTION_CONT, ...}; 
+Imagine you have an array of URLs to fetch:
 
+    my @urls = qw(
+        http://google.com/
+        http://hexten.net/
+        http://search.cpan.org/
+        ... and lots more ...
+    );
 
-=head1 METHODS
+Write a function that retrieves a URL and returns its contents or undef
+if it can't be fetched:
 
-=head2 new([%h])
+    sub fetch {
+        my $url = shift;
+        my $resp = $ua->get($url);
+        return unless $resp->is_success;
+        return $resp->content;
+    };
 
-Constructor. %h is a hash of attributes :
+Now write a function to synthesize a special kind of iterator:
 
-    maxworkers:16 , the max parallel tasks (threads)
-    timeout:10, the time in second before to kill thread (only when stop workers)
-    backend:undef, the task 
-    constructor:undef, the task constructor
-    
-=head2 info()
+    sub list_iter {
+        my @ar = @_;
+        my $pos = 0;
+        return sub {
+            return if $pos >= @ar;
+            my @r = ( $pos, $ar[$pos] );  # Note: returns ( index, value )
+            $pos++;
+            return @r;
+        };
+    }
 
-  return all workers results
-  
-=head2 create(hosts => @hosts, spawn=>0, command=>$cmd, params=>%h|@a|$r, transaction=>%h)
-  
-=head2 stop
-    
-=head2 clear
+The returned iterator will return each element of the list and then
+undef. Actually it returns both the index I<and> the value of each
+element in the array. Because multiple instances of the transformation
+function execute in parallel the results won't necessarily come back in
+order. The array index will later allow us to put completed items in the
+correct place in an output array.
 
-=head2 join
-    
-=head1 DIAGNOSTICS
+Get an iterator for the list of URLs:
 
-=for author to fill in:
-    List every single error and warning message that the module can
-    generate (even the ones that will "never happen"), with a full
-    explanation of each problem, one or more likely causes, and any
-    suggested remedies.
+    my $url_iter = list_iter( @urls );
+
+Then get another iterator which will return the transformed results:
+
+    my $page_iter = iterate( \&fetch, $url_iter );
+
+Finally loop over the returned iterator storing results:
+
+    my @out = ( );
+    while ( my ( $index, $value ) = $page_iter->() ) {
+        $out[$index] = $value;
+    }
+
+Behind the scenes your program forked into ten (by default) instances of
+itself and executed the page requests in parallel.
+
+=head2 Simpler interfaces
+
+Having to construct an iterator is a pain so C<iterate> is smart enough
+to do that for you. Instead of passing an iterator just pass a reference
+to the array:
+
+    my $page_iter = iterate( \&fetch, \@urls );
+
+If you pass a hash reference the iterator you get back will return key,
+value pairs:
+
+    my $some_iter = iterate( \&fetch, \%some_hash );
+
+If the returned iterator is inconvenient you can get back a hash or
+array instead:
+
+    my @done = iterate_as_array( \&fetch, @urls );
+
+    my %done = iterate_as_hash( \&worker, %jobs );
+
+=head2 Caveats
+
+Process forking is expensive. Only use Parallel::Workers in cases where:
 
 =over
 
-=item C<< Error message here, perhaps with %s placeholders >>
+=item the worker waits for I/O
 
-[Description of error here]
+The case of fetching web pages is a good example of this. Fetching a
+page with LWP::UserAgent may take as long as a few seconds but probably
+consumes only a few milliseconds of processor time. Running many
+requests in parallel is a huge win - but be kind to the server you're
+talking to: don't launch a lot of parallel requests unless it's your
+server or you know it can handle the load.
 
-=item C<< Another error message here >>
+=item the worker is CPU intensive and you have multiple cores / CPUs
 
-[Description of error here]
-
-[Et cetera, et cetera]
+If the worker is doing an expensive calculation you can parallelise that
+across multiple CPU cores. Benchmark first though. There's a
+considerable overhead associated with Parallel::Workers; unless your
+calculations are time consuming that overhead will dwarf whatever time
+they take.
 
 =back
 
+=head3 END blocks
+
+Because the current process forks any END blocks will be executed once
+for each child. If it's important that an END block execute only in the
+parent use something like this to guard against multiple execution:
+
+    my $pid = $$;       # in parent
+    END {
+        if ( $$ == pid ) {
+            # Do END stuff in parent only
+        }
+    }
+
+=head2 How It Works
+
+The current process is forked once for each worker. Each forked child is
+connected to the parent by a pair of pipes. The child's STDIN, STDOUT
+and STDERR are unaffected.
+
+Input values are serialised (using Storable) and passed to the workers.
+Completed work items are serialised and returned.
+
+=head1 INTERFACE 
+
+=head2 C<< iterate( [ $options ], $trans, $iterator ) >>
+
+Get an iterator that applies the supplied transformation function to
+each value returned by the input iterator.
+
+Instead of an iterator you may pass an array or hash reference and
+C<iterate> will convert it internally into a suitable iterator.
+
+If you are doing this you may with to investigate C<iterate_as_hash> and
+C<iterate_as_array>.
+
+=head3 Options
+
+A reference to a hash of options may be supplied. The following options
+are supported:
+
+=over
+
+=item C<workers>
+
+The number of concurrent processes to launch. Set this to 0 to disable
+forking. Defaults to 10 on systems that support fork and 0 (disable
+forking) on those that do not.
+
+=back
+
+=cut
+
+sub iterate {
+    my %options = ( %DEFAULTS, %{ 'HASH' eq ref $_[0] ? shift : {} } );
+
+    my $worker = shift;
+    croak "Worker must be a coderef"
+      unless 'CODE' eq ref $worker;
+
+    my $iter = shift;
+    if ( 'ARRAY' eq ref $iter ) {
+        my @ar  = @$iter;
+        my $pos = 0;
+        $iter = sub {
+            return if $pos >= @ar;
+            my @r = ( $pos, $ar[$pos] );
+            $pos++;
+            return @r;
+        };
+    }
+    elsif ( 'HASH' eq ref $iter ) {
+        my %h = %$iter;
+        my @k = keys %h;
+        $iter = sub {
+            return unless @k;
+            my $k = shift @k;
+            return ( $k, $h{$k} );
+        };
+    }
+    elsif ( 'CODE' eq ref $iter ) {
+        # do nothing
+    }
+    else {
+        croak "Iterator must be a code, array or hash ref";
+    }
+
+    if ( $options{workers} > 0 && $DEFAULTS{workers} == 0 ) {
+        warn "Fork not available, falling back to single process mode\n";
+        $options{workers} = 0;
+    }
+
+    if ( $options{workers} == 0 ) {
+        # Non-forking version
+        return sub {
+            if ( my @next = $iter->() ) {
+                return ( $next[0], $worker->( @next ) );
+            }
+            else {
+                return;
+            }
+        };
+    }
+    else {
+
+        # TODO: If we kept track of how many outstanding tasks each worker
+        # had we could load balance more effectively.
+
+        my @workers      = ();
+        my @result_queue = ();
+        my $rdr_sel      = IO::Select->new;
+        my $wtr_sel      = IO::Select->new;
+
+        # Possibly modify the iterator here...
+
+        return sub {
+            LOOP: {
+                # Make new workers
+                if ( @workers < $options{workers} && ( my @next = $iter->() ) )
+                {
+
+                    my ( $my_rdr, $my_wtr, $child_rdr, $child_wtr )
+                      = map IO::Handle->new, 1 .. 4;
+
+                    pipe $child_rdr, $my_wtr
+                      or croak "Can't open write pipe ($!)\n";
+
+                    pipe $my_rdr, $child_wtr
+                      or croak "Can't open read pipe ($!)\n";
+
+                    $rdr_sel->add( $my_rdr );
+                    $wtr_sel->add( $my_wtr );
+
+                    if ( my $pid = fork ) {
+                        # Parent
+                        close $_ for $child_rdr, $child_wtr;
+
+                        push @workers, $pid;
+                        _put_obj( \@next, $my_wtr );
+                    }
+                    else {
+                        # Child
+                        close $_ for $my_rdr, $my_wtr;
+
+                        # Worker loop
+                        while ( defined( my $parcel = _get_obj( $child_rdr ) ) )
+                        {
+                            my $result = $worker->( @$parcel );
+                            _put_obj( [ $parcel->[0], $result ], $child_wtr );
+                        }
+
+                        # End of stream
+                        _put_obj( undef, $child_wtr );
+
+                        close $_ for $child_rdr, $child_wtr;
+                        exit;
+                    }
+                }
+
+                return @{ shift @result_queue } if @result_queue;
+
+                if ( $rdr_sel->count || $wtr_sel->count ) {
+                    my ( $rdr, $wtr, $exc )
+                      = IO::Select->select( $rdr_sel, $wtr_sel, undef );
+
+                    # Anybody got completed work?
+                    for my $r ( @$rdr ) {
+                        if ( defined( my $results = _get_obj( $r ) ) ) {
+                            push @result_queue, $results;
+                        }
+                        else {
+                            $rdr_sel->remove( $r );
+                            close $r;
+                        }
+                    }
+
+                    # Anybody waiting for work?
+                    for my $w ( @$wtr ) {
+                        if ( my @next = $iter->() ) {
+                            _put_obj( \@next, $w );
+                        }
+                        else {
+                            _put_obj( undef, $w );
+                            $wtr_sel->remove( $w );
+                            close $w;
+                        }
+                    }
+                    redo LOOP;
+                }
+
+                waitpid( $_, 0 ) for @workers;
+                return;
+            }
+        };
+    }
+}
+
+=head2 C<< iterate_as_array >>
+
+As C<iterate> but instead of returning an iterator returns an array
+containing the collected output from the iterator. In a scalar context
+returns a reference to the same array.
+
+For this to work properly the input iterator must return (index, value)
+pairs. This allows the results to be placed in the correct slots in the
+output array. The simplest way to do this is to pass an array reference
+as the input iterator:
+
+    my @output = iterate_as_array( \&some_handler, \@input );
+
+=cut
+
+sub iterate_as_array {
+    my $iter = iterate( @_ );
+    my @out  = ();
+    while ( my ( $index, $value ) = $iter->() ) {
+        $out[$index] = $value;
+    }
+    return wantarray ? @out : \@out;
+}
+
+=head2 C<< iterate_as_hash >>
+
+As C<iterate> but instead of returning an iterator returns a hash
+containing the collected output from the iterator. In a scalar context
+returns a reference to the same hash.
+
+For this to work properly the input iterator must return (key, value)
+pairs. This allows the results to be placed in the correct slots in the
+output hash. The simplest way to do this is to pass an hash reference as
+the input iterator:
+
+    my %output = iterate_as_hash( \&some_handler, \%input );
+
+=cut
+
+sub iterate_as_hash {
+    my $iter = iterate( @_ );
+    my %out  = ();
+    while ( my ( $key, $value ) = $iter->() ) {
+        $out{$key} = $value;
+    }
+    return wantarray ? %out : \%out;
+}
+
+sub _get_obj {
+    my $fd = shift;
+    my $r  = fd_retrieve $fd;
+    return $r->[0];
+}
+
+sub _put_obj {
+    my ( $obj, $fd ) = @_;
+    store_fd [$obj], $fd;
+    $fd->flush;
+}
+
+1;
+__END__
 
 =head1 CONFIGURATION AND ENVIRONMENT
-
-=for author to fill in:
-    A full explanation of any configuration system(s) used by the
-    module, including the names and locations of any configuration
-    files, and the meaning of any environment variables or properties
-    that can be set. These descriptions must also include details of any
-    configuration language used.
   
 Parallel::Workers requires no configuration files or environment variables.
 
-
 =head1 DEPENDENCIES
-
-=for author to fill in:
-    A list of all the other modules that this module relies upon,
-    including any restrictions on versions, and an indication whether
-    the module is part of the standard Perl distribution, part of the
-    module's distribution, or must be installed separately. ]
 
 None.
 
-
 =head1 INCOMPATIBILITIES
-
-=for author to fill in:
-    A list of any modules that this module cannot be used in conjunction
-    with. This may be due to name conflicts in the interface, or
-    competition for system or program resources, or due to internal
-    limitations of Perl (for example, many modules that use source code
-    filters are mutually incompatible).
 
 None reported.
 
-
 =head1 BUGS AND LIMITATIONS
-
-=for author to fill in:
-    A list of known problems with the module, together with some
-    indication Whether they are likely to be fixed in an upcoming
-    release. Also a list of restrictions on the features the module
-    does provide: data types that cannot be handled, performance issues
-    and the circumstances in which they may arise, practical
-    limitations on the size of data sets, special cases that are not
-    (yet) handled, etc.
 
 No bugs have been reported.
 
 Please report any bugs or feature requests to
-C<bug-parallel-jobs@rt.cpan.org>, or through the web interface at
+C<bug-parallel-workers@rt.cpan.org>, or through the web interface at
 L<http://rt.cpan.org>.
-
 
 =head1 AUTHOR
 
-Olivier Evalet  C<< <evaleto@gelux.ch> >>
-
+Andy Armstrong  C<< <andy@hexten.net> >>
 
 =head1 LICENCE AND COPYRIGHT
 
-Copyright (c) 2006, Olivier Evalet C<< <evaleto@gelux.ch> >>. All rights reserved.
+Copyright (c) 2007, Andy Armstrong C<< <andy@hexten.net> >>. All rights reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself. See L<perlartistic>.
-
 
 =head1 DISCLAIMER OF WARRANTY
 
